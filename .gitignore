@@ -8,3 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Streamlit cache
+.streamlit/
+.cache/
+
+#test database
+vivi_chat.db
+sudo_chat.db
