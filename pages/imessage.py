@@ -2,19 +2,15 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-from zoneinfo import ZoneInfo
+from typedstream import unarchive_from_data
 
-def text_frequency(df):
+def text_frequency(df, single_contact):
     df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
     df = df.dropna(subset=['timestamp'])
 
-    #time zone swtichy
-    df['timestamp'] = (
-        df['timestamp']
-        .dt.tz_localize('UTC')
-        .dt.tz_convert(ZoneInfo("America/Edmonton"))  # convert to MDT/MST
-    )
-    #df = df[df['timestamp'].dt.year > 2005]
+    #if selects to filter by a top 5 contact
+    if single_contact != "All":
+        df = df[df['contact_id'] == single_contact]
 
     # seconds since midnight for x
     df['sec'] = (
@@ -93,9 +89,16 @@ def text_frequency(df):
 
     st.plotly_chart(fig, use_container_width=True)
 
-def process_null_data(df):
-    df['text'] = df['text'].fillna('')
+def get_decoded_hex(blob):
+    data = bytes.fromhex(blob)
+    arch = unarchive_from_data(data)
+    from typedstream.archiving import TypedValue
 
+    plain = None
+    for item in arch.contents:
+        if isinstance(item, TypedValue) and hasattr(item, "value") and isinstance(item.value, str):
+            plain = item.value
+    return plain
 
 if __name__ == "__main__":
 
@@ -107,13 +110,34 @@ if __name__ == "__main__":
     else:
         conn = sqlite3.connect("sudo_chat.db")
 
+    #incoming/outgoing
+    options = ["incoming", "outgoing"]
+    selection = st.segmented_control("(Both by default)", options)
+
     query = """
     SELECT
-        datetime(date/1000000000 + strftime('%s','2001-01-01'),'unixepoch') AS timestamp
-    FROM message
-    WHERE is_from_me = 1;
+        datetime(m.date/1000000000 + strftime('%s','2001-01-01'),'unixepoch', 'localtime') AS timestamp,
+        m.is_from_me AS is_from_me,
+        m.text AS text,
+        m.attributedBody AS attributed_body,
+        h.id AS contact_id
+    FROM message AS m
+    LEFT JOIN handle AS h
+        ON m.handle_id = h.ROWID
     """
     df = pd.read_sql_query(query, conn)
     conn.close()
 
-    text_frequency(df)
+    #get top 5 contacts
+    cid_series: pd.Series = pd.Series(df["contact_id"])
+    top5 = cid_series.value_counts().head(5).index.tolist()
+    #selecting between different contacts
+    options = ["All"] + top5
+    contact_filter = st.selectbox("Top 5 Contacts", options, index=0)
+
+    if selection == "incoming":
+        df = df[df['is_from_me'] == 0]
+    elif selection == "outgoing":
+        df = df[df['is_from_me'] == 1]
+
+    text_frequency(df, contact_filter)

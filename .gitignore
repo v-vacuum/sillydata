@@ -16,3 +16,4 @@ wheels/
 #test database
 vivi_chat.db
 sudo_chat.db
+package
