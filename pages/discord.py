@@ -3,10 +3,10 @@ import streamlit as st
 import plotly.graph_objects as go
 import os
 import json
+import altair as alt
 
-def text_frequency(df):
-    # Display the chart in Streamlit
-
+@st.cache_data
+def text_frequency_processing(df):
     df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
     df = df.dropna(subset=['Timestamp'])
 
@@ -25,7 +25,6 @@ def text_frequency(df):
     # calendar date for y
     df['date'] = df['Timestamp'].dt.date
     df['time_str'] = df['Timestamp'].dt.strftime('%H:%M')  # for hover
-    df = df.sort_values('date')
 
     # monthly ticks on y
     months = pd.date_range(
@@ -33,6 +32,7 @@ def text_frequency(df):
         df['Timestamp'].max().normalize(),
         freq='MS'
     )
+
     yticks = months.date
 
     # for the axis, show only the 3‑letter month for non‑Jan, and blank for Jan
@@ -40,6 +40,13 @@ def text_frequency(df):
         "" if m.month == 1 else m.strftime('%b')
         for m in months
     ]
+
+    return df, yticks, ytext, months
+
+def text_frequency_graph(df):
+    # Display the chart in Streamlit
+    df, yticks, ytext, months = text_frequency_processing(df)
+
 
     fig = go.Figure(go.Scattergl(
         x    = df['sec'],
@@ -93,20 +100,39 @@ def text_frequency(df):
 
     st.plotly_chart(fig, use_container_width=True)
 
+
+@st.cache_data
+def sort_by_message_count(df):
+    df = df.sort_values(by='Message Count', ascending=False)
+    return df
+
+@st.fragment
+def top_users_graph(df):
+    #creates a chart of the top users texted, bar graph with # of texts
+    st.text("Top Users Messaged")
+    # how about you get top users first LMAOOO
+    df = sort_by_message_count(df)
+    #have a filter for the number of users they want to see
+    filter = st.number_input(
+        "Users Displayed", value=20, placeholder="Type a number..."
+    )
+
+    top = df.head(filter)
+    st.write(alt.Chart(top).mark_bar().encode(
+        x=alt.X('Channel', sort=None),
+        y='Message Count',
+    ))
+
+@st.cache_data
 def read_data():
     start_path = "./package/Messages"
-
-    #get user id so that we can find the other user in chat with us
-    user_data_path = "./package/Account/user.json"
-    user_id = json.load(open(user_data_path))['id']
-
     message_data = pd.DataFrame()
     channel_data = pd.DataFrame()
 
+    with open(os.path.join(start_path, 'index.json'), 'r') as f:
+        index = json.load(f) #this is index.json how did you forget bro
+
     for root, dirs, files in os.walk(start_path):
-        if files[0] == 'index.json':
-            with open(os.path.join(root, files[0]), 'r') as f:
-                index = json.load(f)
         if 'messages.json' in files and 'channel.json' in files:
             with open(os.path.join(root, 'messages.json'), 'r') as f:
                 messages = json.load(f)
@@ -120,23 +146,28 @@ def read_data():
                 #count number of messages and create new data frame
                 # that will rank top texted users
                 message_count = df.shape[0]
-            #TODO: add channel data
-            # with open(os.path.join(root, 'channel.json'), 'r') as f:
-            #     channel = json.load(f)
-            #     #...?
-            #     if channel['type'] == 'DM' and channel['recipients'] is not None :
-            #         recipient = channel['recipients']
-            #     elif channel['type'] == 'GROUP_DM' and channel['recipients'] is not None:
-            #         name = channel['name'] if 'name' in channel and channel['name'] is not None else "defaultname"
-            #         recipient = channel['recipients']
-            #         #TODO: make it not stupid (instead of default name have groupdm with :user user user suer)
-            #     elif channel['type'] == 'GUILD_TEXT' :
-            #         recipient = channel['guild']['name'] + ' : ' + channel['name']
+            with open(os.path.join(root, 'channel.json'), 'r') as f:
+                channel = json.load(f)
+                # get name of channel
+                channel_id = channel['id']
 
-            #    df = pd.DataFrame(channel)
-    return message_data
+                #index the channel id to get name of channel
+                channel_name = index[channel_id]
+
+                #process channel name if is DM
+                if channel_name.startswith('Direct Message with '):
+                    channel_name = channel_name.split('Direct Message with ')[1]
+                if channel_name.endswith('#0'):
+                    channel_name = channel_name.split('#0')[0]
+
+                #append channel data to channel_data dataframe
+                if channel_name != 'Unknown channel' and channel_name != 'None':
+                    df = pd.DataFrame({'Channel': [channel_name], 'Message Count': [message_count]})
+                    channel_data = pd.concat([channel_data, df])
+    return message_data, channel_data
 
 if __name__ == "__main__":
     #read file, hardcoded as mine
-    df = read_data()
-    text_frequency(df)
+    message_data, channel_data = read_data()
+    text_frequency_graph(message_data)
+    top_users_graph(channel_data)
