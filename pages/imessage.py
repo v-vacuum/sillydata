@@ -4,7 +4,8 @@ import streamlit as st
 import plotly.graph_objects as go
 from typedstream import unarchive_from_data
 
-def text_frequency(df, single_contact):
+@st.cache_data
+def text_frequency_processing(df, single_contact):
     df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
     df = df.dropna(subset=['timestamp'])
 
@@ -36,6 +37,10 @@ def text_frequency(df, single_contact):
         "" if m.month == 1 else m.strftime('%b')
         for m in months
     ]
+    return df, yticks, ytext, months
+
+def text_frequency(df, single_contact):
+    df, yticks, ytext, months = text_frequency_processing(df, single_contact)
 
     fig = go.Figure(go.Scattergl(
         x    = df['sec'],

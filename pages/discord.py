@@ -26,6 +26,7 @@ def text_frequency_processing(df):
     df['date'] = df['Timestamp'].dt.date
     df['time_str'] = df['Timestamp'].dt.strftime('%H:%M')  # for hover
 
+
     # monthly ticks on y
     months = pd.date_range(
         df['Timestamp'].min().normalize(),
@@ -43,8 +44,24 @@ def text_frequency_processing(df):
 
     return df, yticks, ytext, months
 
-def text_frequency_graph(df):
+def text_frequency_graph(df, top_five):
     # Display the chart in Streamlit
+    # if a top 5 user is chosen, filter
+
+    options = ["All"] + top_five
+    contact_filter = st.selectbox("Top Contacts", options, index=0)
+
+    if contact_filter != "All":
+        df = df[df['Channel'] == contact_filter]
+
+    #channel type filter
+    options = ['All', 'DM', 'GROUP_DM', 'GUILD_TEXT']
+    contact_filter = st.selectbox("Channel Type", options, index=0)
+
+    if contact_filter != "All":
+        df = df[df['Channel Type'] == contact_filter]
+
+
     df, yticks, ytext, months = text_frequency_processing(df)
 
 
@@ -110,8 +127,6 @@ def sort_by_message_count(df):
 def top_users_graph(df):
     #creates a chart of the top users texted, bar graph with # of texts
     st.text("Top Users Messaged")
-    # how about you get top users first LMAOOO
-    df = sort_by_message_count(df)
     #have a filter for the number of users they want to see
     filter = st.number_input(
         "Users Displayed", value=20, placeholder="Type a number..."
@@ -136,21 +151,21 @@ def read_data():
         if 'messages.json' in files and 'channel.json' in files:
             with open(os.path.join(root, 'messages.json'), 'r') as f:
                 messages = json.load(f)
-                df = pd.DataFrame(messages)
-                if len(df) == 0:
+                init_messages = pd.DataFrame(messages)
+
+                if len(init_messages) == 0:
                     continue
                 #keep only Timestamp and content
-                df = df[['Timestamp', 'Contents']]
-                message_data = pd.concat([message_data, df])
+                init_messages = init_messages[['Timestamp', 'Contents']]
 
                 #count number of messages and create new data frame
                 # that will rank top texted users
-                message_count = df.shape[0]
+                message_count = init_messages.shape[0]
             with open(os.path.join(root, 'channel.json'), 'r') as f:
                 channel = json.load(f)
+                channel_type = channel['type']
                 # get name of channel
                 channel_id = channel['id']
-
                 #index the channel id to get name of channel
                 channel_name = index[channel_id]
 
@@ -164,10 +179,23 @@ def read_data():
                 if channel_name != 'Unknown channel' and channel_name != 'None':
                     df = pd.DataFrame({'Channel': [channel_name], 'Message Count': [message_count]})
                     channel_data = pd.concat([channel_data, df])
+
+                    #add channel name to all entries of current iteration
+                    init_messages['Channel'] = channel_name
+                    init_messages['Channel Type'] = channel_type
+                    #concat to message_data dataframe
+                    message_data = pd.concat([message_data, init_messages])
+
     return message_data, channel_data
 
 if __name__ == "__main__":
     #read file, hardcoded as mine
     message_data, channel_data = read_data()
-    text_frequency_graph(message_data)
-    top_users_graph(channel_data)
+    #sort chanell data top users texted to least
+    sorted_channel_data = sort_by_message_count(channel_data)
+
+    #get top 5 users to pass to text frequency to sort
+    top_five = list(sorted_channel_data.head(10)['Channel'])
+
+    text_frequency_graph(message_data, top_five)
+    top_users_graph(sorted_channel_data)
