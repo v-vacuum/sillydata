@@ -1,6 +1,16 @@
-TODO:
-- make filtering for channel/groupdm/dm types
-- racist metrics <3
-- zipf's law, normalize data dn compare how much you use words compared to others
-  - (what about fake words? names? imagine i say skibidi super duper amounts)
-- top used emojis month/year
+streamlit run welcome.py
+```
+or
+```bash
+streamlit run welcome.py
+```
+
+## Data
+
+The application expects the data to be in the following format:
+- Discord data: a directory containing a `Messages` directory with JSON files
+- iMessage data: a SQLite database file
+
+## Functionality
+
+The application allows users to visualize and analyze their GDPR data, including message frequency, top contacts, and emoji usage. It

@@ -2,14 +2,95 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-from typedstream import unarchive_from_data
+from io import BytesIO
+import typedstream
+import os
+
+def decode_attributed_body(body):
+    """Decode binary attributed body using Python"""
+    if not body or not isinstance(body, bytes):
+        return None
+    try:
+        stream = BytesIO(body)
+        ts_stream = typedstream.unarchive_from_stream(stream)
+        decoded = ts_stream.decode()
+        if isinstance(decoded, typedstream.Value):
+            if isinstance(decoded.value, str):
+                return decoded.value
+            elif isinstance(decoded.value, dict):
+                if 'NS.string' in decoded.value:
+                    return decoded.value['NS.string']
+            elif isinstance(decoded.value, list):
+                for item in decoded.value:
+                    if isinstance(item, str):
+                        return item
+                    elif isinstance(item, dict) and 'NS.string' in item:
+                        return item['NS.string']
+        return None
+    except Exception as e:
+        return None
+
+@st.cache_data
+def load_and_process_messages(db_path):
+    """Load messages from SQLite database and decode text"""
+    conn = sqlite3.connect(db_path)
+
+    query = """
+    SELECT
+        datetime(m.date/1000000000 + strftime('%s','2001-01-01'),'unixepoch', 'localtime') AS timestamp,
+        m.is_from_me AS is_from_me,
+        m.text AS text,
+        m.attributedBody AS attributedBody,
+        h.id AS contact_id
+    FROM message AS m
+    LEFT JOIN handle AS h
+        ON m.handle_id = h.ROWID
+    ORDER BY m.date
+    """
+
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+
+    # decode attributed bodies
+    info_placeholder = st.empty()
+    progress_placeholder = st.empty()
+    info_placeholder.info("Decoding message text (this may take a moment)...")
+    progress_bar = progress_placeholder.progress(0)
+
+    decoded_messages = []
+    total = len(df)
+
+    for i, row in df.iterrows():
+        # try attributedBody first, then fall back to text
+        message_text = None
+
+        if row['attributedBody']:
+            message_text = decode_attributed_body(row['attributedBody'])
+
+        if not message_text and row['text']:
+            message_text = row['text']
+
+        decoded_messages.append(message_text or '')
+
+        # update progress every 100 rows
+        if i % 100 == 0 or i == total - 1:
+            progress_bar.progress((i + 1) / total)
+
+    df['message'] = decoded_messages
+
+    # clean columns
+    df = df[['timestamp', 'is_from_me', 'message', 'contact_id']]
+    info_placeholder.empty()
+    progress_placeholder.empty()
+
+    return df
 
 @st.cache_data
 def text_frequency_processing(df, single_contact):
     df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
     df = df.dropna(subset=['timestamp'])
 
-    #if selects to filter by a top 5 contact
+    # if selects to filter by a top 5 contact
     if single_contact != "All":
         df = df[df['contact_id'] == single_contact]
 
@@ -47,8 +128,8 @@ def text_frequency(df, single_contact):
         y    = df['date'],
         mode = 'markers',
         marker=dict(size=2.5, opacity=0.3),
-        customdata=df['time_str'],
-        hovertemplate="Time: %{customdata}<br>Date: %{y}<extra></extra>"
+        customdata=df[['time_str', 'message']].values,
+        hovertemplate="Time: %{customdata[0]}<br>Date: %{y}<extra></extra><br>Message: %{customdata[1]}"
     ))
 
     fig.update_layout(
@@ -79,7 +160,7 @@ def text_frequency(df, single_contact):
     max_day = df['date'].max()
     fig.update_yaxes(range=[max_day, min_day], autorange=False)
 
-    #big year annotations
+    # big year annotations
     for m in months:
         if m.month == 1:
             fig.add_annotation(
@@ -94,55 +175,51 @@ def text_frequency(df, single_contact):
 
     st.plotly_chart(fig, use_container_width=True)
 
-def get_decoded_hex(blob):
-    data = bytes.fromhex(blob)
-    arch = unarchive_from_data(data)
-    from typedstream.archiving import TypedValue
-
-    plain = None
-    for item in arch.contents:
-        if isinstance(item, TypedValue) and hasattr(item, "value") and isinstance(item.value, str):
-            plain = item.value
-    return plain
-
 if __name__ == "__main__":
+    st.title("iMessage Analysis Tool")
 
-    #set up easy swtich between vivi and sudo
+    # Database selection
     options = ["vivi_chat.db", "sudo_chat.db"]
     selection = st.segmented_control("Database", options, selection_mode="single")
-    if selection == "vivi_chat.db":
-        conn = sqlite3.connect("vivi_chat.db")
-    else:
-        conn = sqlite3.connect("sudo_chat.db")
 
-    #incoming/outgoing
-    options = ["incoming", "outgoing"]
-    selection = st.segmented_control("(Both by default)", options)
+    if selection is None:
+        st.info("Please select a database to analyze.")
+        st.stop()
 
-    query = """
-    SELECT
-        datetime(m.date/1000000000 + strftime('%s','2001-01-01'),'unixepoch', 'localtime') AS timestamp,
-        m.is_from_me AS is_from_me,
-        m.text AS text,
-        m.attributedBody AS attributed_body,
-        h.id AS contact_id
-    FROM message AS m
-    LEFT JOIN handle AS h
-        ON m.handle_id = h.ROWID
-    """
-    df = pd.read_sql_query(query, conn)
-    conn.close()
+    if not os.path.exists(selection):
+        st.error(f"Database file '{selection}' not found!")
+        st.stop()
 
-    #get top 5 contacts
-    cid_series: pd.Series = pd.Series(df["contact_id"])
-    top5 = cid_series.value_counts().head(5).index.tolist()
-    #selecting between different contacts
-    options = ["All"] + top5
-    contact_filter = st.selectbox("Top 5 Contacts", options, index=0)
+    # Load and process messages
+    with st.spinner("Loading and decoding messages..."):
+        df = load_and_process_messages(selection)
 
-    if selection == "incoming":
+    if df is None or df.empty:
+        st.error("Failed to process messages or no messages found.")
+        st.stop()
+
+    st.success(f"Loaded {len(df)} messages!")
+
+    # Message direction filter
+    direction_options = ["Both", "Incoming", "Outgoing"]
+    direction_filter = st.selectbox("Message Direction", direction_options)
+
+    if direction_filter == "Incoming":
         df = df[df['is_from_me'] == 0]
-    elif selection == "outgoing":
+    elif direction_filter == "Outgoing":
         df = df[df['is_from_me'] == 1]
 
+    # Get top 5 contacts
+    contact_counts = df['contact_id'].value_counts()
+    top5 = contact_counts.head(5).index.tolist()
+
+    # Contact filter
+    contact_options = ["All"] + top5
+    contact_filter = st.selectbox("Filter by Contact (Top 5)", contact_options)
+
+    # Show contact stats
+    st.subheader("Top Contacts")
+    st.dataframe(contact_counts.head(10))
+
+    # Generate visualization
     text_frequency(df, contact_filter)

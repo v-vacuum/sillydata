@@ -16,4 +16,6 @@ wheels/
 #test database
 vivi_chat.db
 sudo_chat.db
-package
+package_vivi
+package_sudolabel
+package_s2e3440z
