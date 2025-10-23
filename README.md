@@ -1,6 +1,3 @@
-streamlit run welcome.py
-```
-or
 ```bash
 streamlit run welcome.py
 ```
