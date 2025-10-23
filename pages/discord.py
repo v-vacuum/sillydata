@@ -4,6 +4,7 @@ import plotly.graph_objects as go
 import os
 import json
 import altair as alt
+import re
 
 @st.cache_data
 def text_frequency_processing(df):
@@ -44,7 +45,7 @@ def text_frequency_processing(df):
 
     return df, yticks, ytext, months
 
-def text_frequency_graph(df, top_five):
+def text_frequency_graph(df, top_five: list[str]) -> None:
     # Display the chart in Streamlit
     # if a top 5 user is chosen, filter
 
@@ -70,8 +71,8 @@ def text_frequency_graph(df, top_five):
         y    = df['date'],
         mode = 'markers',
         marker=dict(size=2.5, opacity=0.3),
-        customdata=df['time_str'],
-        hovertemplate="Time: %{customdata}<br>Date: %{y}<extra></extra>"
+        customdata=df[['time_str', 'Contents', 'Channel']].values,
+        hovertemplate="Time: %{customdata[0]}<br>Date: %{y}<extra></extra><br>Channel: %{customdata[2]}<br>Message: %{customdata[1]}"
     ))
 
     fig.update_layout(
@@ -119,12 +120,12 @@ def text_frequency_graph(df, top_five):
 
 
 @st.cache_data
-def sort_by_message_count(df):
+def sort_by_message_count(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(by='Message Count', ascending=False)
     return df
 
 @st.fragment
-def top_users_graph(df):
+def top_users_graph(df: pd.DataFrame):
     #creates a chart of the top users texted, bar graph with # of texts
     st.text("Top Users Messaged")
     #have a filter for the number of users they want to see
@@ -138,11 +139,47 @@ def top_users_graph(df):
         y='Message Count',
     ))
 
+@st.fragment
+def top_emoji_graph(emoji_count: dict):
+    #creates a chart of the top emojis used, bar graph with # of uses
+    st.text("Top Emojis Used")
+    #have a filter for the number of emojis they want to see
+    filter = st.number_input(
+        "Emojis Displayed", value=10, placeholder="Type a number..."
+    )
+
+    #get top emojis used... sigh
+    # maybe just change dict into pd.DataFrame
+    emoji_df = pd.DataFrame.from_dict(emoji_count, orient = 'index')
+    emoji_df.columns = ['Count']
+    emoji_df.index.name = 'Emoji'
+    emoji_df.reset_index(inplace=True)
+    st.write(alt.Chart(emoji_df.head(filter)).mark_bar().encode(
+        x=alt.X('Emoji', sort='-y', axis=alt.Axis(labelAngle = 0)),
+        y='Count',
+    ).configure_axis(
+        labelFontSize=20,
+        titleFontSize=10
+    ))
+
+
 @st.cache_data
-def read_data():
-    start_path = "./package/Messages"
+def read_data(database):
+    #read and returns message_data with columns: Timestamp, Contents, Channel, Channel Type,
+    # and channel_data with Channel and Message Count
+    start_path = f"./{database}/Messages"
     message_data = pd.DataFrame()
     channel_data = pd.DataFrame()
+
+    #for counting emojis
+    emoji_count = {}
+    emoji_pattern = re.compile(u"(["
+    u"\U0001F600-\U0001F64F"  # emoticons
+    u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+    u"\U0001F680-\U0001F6FF"  # transport & map symbols
+    u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
+                    "])", flags= re.UNICODE)
+
 
     with open(os.path.join(start_path, 'index.json'), 'r') as f:
         index = json.load(f) #this is index.json how did you forget bro
@@ -158,9 +195,18 @@ def read_data():
                 #keep only Timestamp and content
                 init_messages = init_messages[['Timestamp', 'Contents']]
 
+                #get emojis in contents if there is one, and add to dict
+                for message in init_messages['Contents']:
+                    emojis = emoji_pattern.findall(message)
+                    for emoji in emojis:
+                        if emoji in emoji_count:
+                            emoji_count[emoji] += 1
+                        else:
+                            emoji_count[emoji] = 1
                 #count number of messages and create new data frame
                 # that will rank top texted users
                 message_count = init_messages.shape[0]
+
             with open(os.path.join(root, 'channel.json'), 'r') as f:
                 channel = json.load(f)
                 channel_type = channel['type']
@@ -186,11 +232,24 @@ def read_data():
                     #concat to message_data dataframe
                     message_data = pd.concat([message_data, init_messages])
 
-    return message_data, channel_data
+    return message_data, channel_data, emoji_count
 
 if __name__ == "__main__":
+
+    #set up easy swtich between vivi and sudo
+    options = ["vacuum", "sudolabel", "s2e3440z"]
+    selection = st.segmented_control("Database", options, selection_mode="single", default=options[0])
+    if selection == "vacuum":
+        database = "package_vivi"
+    elif selection == "sudolabel":
+        database = "package_sudolabel"
+    elif selection == "s2e3440z":
+        database = "package_s2e3440z"
+    else:
+        database = "package_vivi"
+
     #read file, hardcoded as mine
-    message_data, channel_data = read_data()
+    message_data, channel_data, emoji_count = read_data(database)
     #sort chanell data top users texted to least
     sorted_channel_data = sort_by_message_count(channel_data)
 
@@ -199,3 +258,4 @@ if __name__ == "__main__":
 
     text_frequency_graph(message_data, top_five)
     top_users_graph(sorted_channel_data)
+    top_emoji_graph(emoji_count)
