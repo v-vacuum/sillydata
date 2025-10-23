@@ -10,4 +10,4 @@ The application expects the data to be in the following format:
 
 ## Functionality
 
-The application allows users to visualize and analyze their GDPR data, including message frequency, top contacts, and emoji usage. It
+The application allows users to visualize and analyze their GDPR data, including message frequency, top contacts, and emoji usage. It provides interactive visualizations and filters to help users gain insights into their data.
