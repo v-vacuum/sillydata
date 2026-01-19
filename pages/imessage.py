@@ -5,6 +5,124 @@ import plotly.graph_objects as go
 from io import BytesIO
 import typedstream
 import os
+import re
+import altair as alt
+from collections import Counter
+from wordfreq import zipf_frequency, word_frequency
+
+EMOJI_PATTERN = re.compile(u"(["
+    u"\U0001F600-\U0001F64F"  # emoticons
+    u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+    u"\U0001F680-\U0001F6FF"  # transport & map symbols
+    u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
+"])", flags=re.UNICODE)
+
+URL_PATTERN = re.compile(r'https?://\S+')
+WORD_PATTERN = re.compile(r"[a-zA-Z']+")
+ZIPF_THRESHOLD = 3.0
+
+
+def extract_words(text: str) -> list[str]:
+    if not text or not isinstance(text, str):
+        return []
+    text = URL_PATTERN.sub('', text)
+    text = text.lower()
+    words = WORD_PATTERN.findall(text)
+    return [w for w in words if len(w) >= 2 and w != "s"]
+
+
+def categorize_words(words: list[str]) -> tuple[Counter, Counter]:
+    dictionary_words = Counter()
+    non_dictionary_words = Counter()
+    for word in words:
+        zipf = zipf_frequency(word, 'en')
+        if zipf >= ZIPF_THRESHOLD:
+            dictionary_words[word] += 1
+        else:
+            non_dictionary_words[word] += 1
+    return dictionary_words, non_dictionary_words
+
+
+@st.cache_data
+def compute_word_stats_alltime(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    all_words = []
+    for content in df['message']:
+        all_words.extend(extract_words(content))
+
+    dict_words, non_dict_words = categorize_words(all_words)
+    total_words = len(all_words) if all_words else 1
+
+    dict_records = []
+    for word, count in dict_words.items():
+        expected_freq = word_frequency(word, 'en')
+        user_freq = count / total_words
+        if expected_freq > 0:
+            times_more = user_freq / expected_freq
+        else:
+            times_more = 0
+        dict_records.append({
+            'word': word,
+            'count': count,
+            'times_more': times_more
+        })
+
+    non_dict_records = []
+    for word, count in non_dict_words.items():
+        non_dict_records.append({
+            'word': word,
+            'count': count
+        })
+
+    dict_df = pd.DataFrame(dict_records)
+    non_dict_df = pd.DataFrame(non_dict_records)
+
+    return dict_df, non_dict_df
+
+
+@st.fragment
+def zipf_word_analysis(df: pd.DataFrame) -> None:
+    dict_df, non_dict_df = compute_word_stats_alltime(df)
+
+    st.markdown("**Zipf-Recognized Words**")
+    st.caption("These are common English words. The bar shows how many times more often you use each word compared to the average English speaker. A value of 100 means you use that word 100x more than average.")
+    num_zipf = st.number_input("Words Displayed", value=10, min_value=1, max_value=50, key="imsg_zipf_words")
+    if not dict_df.empty:
+        top_dict = dict_df.nlargest(num_zipf, 'times_more')
+        fig1 = go.Figure(go.Bar(
+            x=top_dict['word'],
+            y=top_dict['times_more'],
+            hovertemplate="<b>%{x}</b><br>%{y:.1f}x more than average<br>Count: %{customdata}<extra></extra>",
+            customdata=top_dict['count']
+        ))
+        fig1.update_layout(
+            title=f"Top {num_zipf} Zipf-Recognized Words (All Time)",
+            xaxis_title="Word",
+            yaxis_title="Times More Than Average",
+            height=400
+        )
+        st.plotly_chart(fig1, use_container_width=True)
+    else:
+        st.info("No Zipf-recognized words found")
+
+    st.markdown("**Non-Zipf-Recognized Words**")
+    st.caption("These are words not commonly found in English - typos, slang, acronyms, or made-up words.")
+    num_non_zipf = st.number_input("Words Displayed", value=10, min_value=1, max_value=50, key="imsg_non_zipf_words")
+    if not non_dict_df.empty:
+        top_non_dict = non_dict_df.nlargest(num_non_zipf, 'count')
+        fig2 = go.Figure(go.Bar(
+            x=top_non_dict['word'],
+            y=top_non_dict['count'],
+            hovertemplate="<b>%{x}</b><br>Count: %{y}<extra></extra>"
+        ))
+        fig2.update_layout(
+            title=f"Top {num_non_zipf} Non-Zipf-Recognized Words (All Time)",
+            xaxis_title="Word",
+            yaxis_title="Count",
+            height=400
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+    else:
+        st.info("No non-Zipf-recognized words found")
 
 def decode_attributed_body(body):
     """Decode binary attributed body using Python"""
@@ -34,6 +152,7 @@ def decode_attributed_body(body):
 def load_and_process_messages(db_path):
     """Load messages from SQLite database and decode text"""
     conn = sqlite3.connect(db_path)
+    emoji_count = {}
 
     query = """
     SELECT
@@ -72,6 +191,15 @@ def load_and_process_messages(db_path):
 
         decoded_messages.append(message_text or '')
 
+        # count emojis in this message
+        if message_text:
+            emojis = EMOJI_PATTERN.findall(message_text)
+            for emoji in emojis:
+                if emoji in emoji_count:
+                    emoji_count[emoji] += 1
+                else:
+                    emoji_count[emoji] = 1
+
         # update progress every 100 rows
         if i % 100 == 0 or i == total - 1:
             progress_bar.progress((i + 1) / total)
@@ -83,7 +211,7 @@ def load_and_process_messages(db_path):
     info_placeholder.empty()
     progress_placeholder.empty()
 
-    return df
+    return df, emoji_count
 
 @st.cache_data
 def preprocess_messages(df):
@@ -179,6 +307,31 @@ def text_frequency(df, total_count: int):
 
     st.plotly_chart(fig, use_container_width=True)
 
+@st.fragment
+def top_emoji_graph(emoji_count: dict):
+    st.text("Top Emojis Used")
+
+    if not emoji_count:
+        st.info("No emojis found in messages.")
+        return
+
+    filter = st.number_input(
+        "Emojis Displayed", value=10, placeholder="Type a number..."
+    )
+
+    emoji_df = pd.DataFrame.from_dict(emoji_count, orient='index')
+    emoji_df.columns = ['Count']
+    emoji_df.index.name = 'Emoji'
+    emoji_df.reset_index(inplace=True)
+    emoji_df = emoji_df.sort_values('Count', ascending=False)
+    st.write(alt.Chart(emoji_df.head(filter)).mark_bar().encode(
+        x=alt.X('Emoji', sort='-y', axis=alt.Axis(labelAngle=0)),
+        y='Count',
+    ).configure_axis(
+        labelFontSize=20,
+        titleFontSize=10
+    ))
+
 if __name__ == "__main__":
     st.title("iMessage Analysis Tool")
 
@@ -196,7 +349,7 @@ if __name__ == "__main__":
 
     # Load and process messages (cached)
     with st.spinner("Loading and decoding messages..."):
-        raw_df = load_and_process_messages(selection)
+        raw_df, emoji_count = load_and_process_messages(selection)
 
     if raw_df is None or raw_df.empty:
         st.error("Failed to process messages or no messages found.")
@@ -207,32 +360,52 @@ if __name__ == "__main__":
 
     st.success(f"Loaded {len(df)} messages!")
 
-    # Message direction filter
     direction_options = ["Both", "Incoming", "Outgoing"]
-    direction_filter = st.selectbox("Message Direction", direction_options)
-
-    # Get top 5 contacts from full dataset
-    contact_counts = df['contact_id'].value_counts()
-    top5 = contact_counts.head(5).index.tolist()
-
-    # Contact filter
+    contact_counts_all = df['contact_id'].value_counts()
+    top5 = contact_counts_all.head(5).index.tolist()
     contact_options = ["All"] + top5
-    contact_filter = st.selectbox("Filter by Contact (Top 5)", contact_options)
 
-    # Apply filters (fast operations on preprocessed data)
-    filtered_df = df.copy()
-
-    if direction_filter == "Incoming":
-        filtered_df = filtered_df[filtered_df['is_from_me'] == 0]
-    elif direction_filter == "Outgoing":
-        filtered_df = filtered_df[filtered_df['is_from_me'] == 1]
-
-    if contact_filter != "All":
-        filtered_df = filtered_df[filtered_df['contact_id'] == contact_filter]
-
-    # Show contact stats
     st.subheader("Top Contacts")
-    st.dataframe(contact_counts.head(10))
+    contacts_dir = st.selectbox("Message Direction", direction_options, key="contacts_dir")
+    if contacts_dir == "Incoming":
+        contacts_df = df[df['is_from_me'] == 0]
+    elif contacts_dir == "Outgoing":
+        contacts_df = df[df['is_from_me'] == 1]
+    else:
+        contacts_df = df
+    st.dataframe(contacts_df['contact_id'].value_counts().head(10))
 
-    # Generate visualization (search bar is inside this function)
-    text_frequency(filtered_df, len(df))
+    st.subheader("Message Frequency")
+    col1, col2 = st.columns(2)
+    with col1:
+        freq_dir = st.selectbox("Message Direction", direction_options, key="freq_dir")
+    with col2:
+        freq_contact = st.selectbox("Filter by Contact (Top 5)", contact_options, key="freq_contact")
+    if freq_dir == "Incoming":
+        freq_df = df[df['is_from_me'] == 0]
+    elif freq_dir == "Outgoing":
+        freq_df = df[df['is_from_me'] == 1]
+    else:
+        freq_df = df
+    if freq_contact != "All":
+        freq_df = freq_df[freq_df['contact_id'] == freq_contact]
+    text_frequency(freq_df, len(df))
+
+    st.subheader("Word Analysis")
+    col1, col2 = st.columns(2)
+    with col1:
+        zipf_dir = st.selectbox("Message Direction", direction_options, key="zipf_dir")
+    with col2:
+        zipf_contact = st.selectbox("Filter by Contact (Top 5)", contact_options, key="zipf_contact")
+    if zipf_dir == "Incoming":
+        zipf_df = df[df['is_from_me'] == 0]
+    elif zipf_dir == "Outgoing":
+        zipf_df = df[df['is_from_me'] == 1]
+    else:
+        zipf_df = df
+    if zipf_contact != "All":
+        zipf_df = zipf_df[zipf_df['contact_id'] == zipf_contact]
+    zipf_word_analysis(zipf_df)
+
+    st.subheader("Emoji Analysis")
+    top_emoji_graph(emoji_count)

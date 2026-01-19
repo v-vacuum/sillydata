@@ -5,6 +5,121 @@ import os
 import json
 import altair as alt
 import re
+from collections import Counter
+from wordfreq import zipf_frequency, word_frequency
+
+URL_PATTERN = re.compile(r'https?://\S+')
+MENTION_PATTERN = re.compile(r'<@!?\d+>')
+CUSTOM_EMOJI_PATTERN = re.compile(r'<a?:\w+:\d+>')
+WORD_PATTERN = re.compile(r"[a-zA-Z']+")
+
+
+def extract_words(text: str) -> list[str]:
+    if not text or not isinstance(text, str):
+        return []
+    text = URL_PATTERN.sub('', text)
+    text = MENTION_PATTERN.sub('', text)
+    text = CUSTOM_EMOJI_PATTERN.sub('', text)
+    text = text.lower()
+    words = WORD_PATTERN.findall(text)
+    return [w for w in words if len(w) >= 2 and w != "s"]
+
+
+ZIPF_THRESHOLD = 3.0
+
+def categorize_words(words: list[str]) -> tuple[Counter, Counter]:
+    dictionary_words = Counter()
+    non_dictionary_words = Counter()
+    for word in words:
+        zipf = zipf_frequency(word, 'en')
+        if zipf >= ZIPF_THRESHOLD:
+            dictionary_words[word] += 1
+        else:
+            non_dictionary_words[word] += 1
+    return dictionary_words, non_dictionary_words
+
+
+@st.cache_data
+def compute_word_stats_alltime(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    all_words = []
+    for content in df['Contents']:
+        all_words.extend(extract_words(content))
+
+    dict_words, non_dict_words = categorize_words(all_words)
+    total_words = len(all_words) if all_words else 1
+
+    dict_records = []
+    for word, count in dict_words.items():
+        expected_freq = word_frequency(word, 'en')
+        user_freq = count / total_words
+        if expected_freq > 0:
+            times_more = user_freq / expected_freq
+        else:
+            times_more = 0
+        dict_records.append({
+            'word': word,
+            'count': count,
+            'times_more': times_more
+        })
+
+    non_dict_records = []
+    for word, count in non_dict_words.items():
+        non_dict_records.append({
+            'word': word,
+            'count': count
+        })
+
+    dict_df = pd.DataFrame(dict_records)
+    non_dict_df = pd.DataFrame(non_dict_records)
+
+    return dict_df, non_dict_df
+
+
+@st.fragment
+def zipf_word_analysis(df: pd.DataFrame) -> None:
+    dict_df, non_dict_df = compute_word_stats_alltime(df)
+
+    st.markdown("**Zipf-Recognized Words**")
+    st.caption("These are common English words. The bar shows how many times more often you use each word compared to the average English speaker. A value of 100 means you use that word 100x more than average.")
+    num_zipf = st.number_input("Words Displayed", value=10, min_value=1, max_value=50, key="zipf_words")
+    if not dict_df.empty:
+        top_dict = dict_df.nlargest(num_zipf, 'times_more')
+        fig1 = go.Figure(go.Bar(
+            x=top_dict['word'],
+            y=top_dict['times_more'],
+            hovertemplate="<b>%{x}</b><br>%{y:.1f}x more than average<br>Count: %{customdata}<extra></extra>",
+            customdata=top_dict['count']
+        ))
+        fig1.update_layout(
+            title=f"Top {num_zipf} Zipf-Recognized Words (All Time)",
+            xaxis_title="Word",
+            yaxis_title="Times More Than Average",
+            height=400
+        )
+        st.plotly_chart(fig1, use_container_width=True)
+    else:
+        st.info("No Zipf-recognized words found")
+
+    st.markdown("**Non-Zipf-Recognized Words**")
+    st.caption("These are words not commonly found in English - typos, slang, acronyms, usernames, or made-up words.")
+    num_non_zipf = st.number_input("Words Displayed", value=10, min_value=1, max_value=50, key="non_zipf_words")
+    if not non_dict_df.empty:
+        top_non_dict = non_dict_df.nlargest(num_non_zipf, 'count')
+        fig2 = go.Figure(go.Bar(
+            x=top_non_dict['word'],
+            y=top_non_dict['count'],
+            hovertemplate="<b>%{x}</b><br>Count: %{y}<extra></extra>"
+        ))
+        fig2.update_layout(
+            title=f"Top {num_non_zipf} Non-Zipf-Recognized Words (All Time)",
+            xaxis_title="Word",
+            yaxis_title="Count",
+            height=400
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+    else:
+        st.info("No non-Zipf-recognized words found")
+
 
 @st.cache_data
 def preprocess_messages(df):
@@ -263,3 +378,4 @@ if __name__ == "__main__":
     text_frequency_graph(filtered_df, total_count)
     top_users_graph(sorted_channel_data)
     top_emoji_graph(emoji_count)
+    zipf_word_analysis(raw_message_data)
