@@ -5,8 +5,18 @@ import os
 import json
 import altair as alt
 import re
+import zipfile
+import shutil
 from collections import Counter
 from wordfreq import zipf_frequency, word_frequency
+from config import (
+    get_discord_sources,
+    add_discord_source,
+    remove_discord_source,
+)
+
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+DISCORD_UPLOAD_DIR = os.path.join(DATA_DIR, "discord")
 
 URL_PATTERN = re.compile(r'https?://\S+')
 MENTION_PATTERN = re.compile(r'<@!?\d+>')
@@ -264,10 +274,17 @@ def top_emoji_graph(emoji_count: dict):
 
 
 @st.cache_data
-def read_data(database):
-    #read and returns message_data with columns: Timestamp, Contents, Channel, Channel Type,
-    # and channel_data with Channel and Message Count
-    start_path = f"./{database}/Messages"
+def read_data(base_path: str):
+    """Read Discord data export.
+
+    Args:
+        base_path: Path to the Discord data export directory (contains messages/ subdirectory)
+    """
+    messages_subdir = os.path.join(base_path, "messages")
+    if os.path.isdir(messages_subdir):
+        start_path = messages_subdir
+    else:
+        start_path = base_path
     message_data = pd.DataFrame()
     channel_data = pd.DataFrame()
 
@@ -334,38 +351,146 @@ def read_data(database):
 
     return message_data, channel_data, emoji_count
 
+def render_add_source_form():
+    """Render the form for adding a new Discord data source."""
+    with st.expander("Add New Data Source", expanded=False):
+        st.caption("Upload your Discord data export zip file, or enter a folder path.")
+
+        uploaded_file = st.file_uploader(
+            "Upload Discord data zip",
+            type=["zip"],
+            key="discord_uploader",
+            help="The zip file you downloaded from Discord"
+        )
+
+        if uploaded_file is not None:
+            name = st.text_input("Name for this source", value="My Discord", key="discord_upload_name")
+            if st.button("Extract and Add", key="add_uploaded_discord"):
+                if not name:
+                    st.error("Please enter a name.")
+                else:
+                    os.makedirs(DISCORD_UPLOAD_DIR, exist_ok=True)
+                    extract_dir = os.path.join(DISCORD_UPLOAD_DIR, name.replace(' ', '_'))
+
+                    if os.path.exists(extract_dir):
+                        shutil.rmtree(extract_dir)
+
+                    with st.spinner("Extracting zip file..."):
+                        with zipfile.ZipFile(uploaded_file, 'r') as zip_ref:
+                            zip_ref.extractall(extract_dir)
+
+                    messages_path = os.path.join(extract_dir, "messages")
+                    if not os.path.isdir(messages_path):
+                        subdirs = [d for d in os.listdir(extract_dir) if os.path.isdir(os.path.join(extract_dir, d))]
+                        if len(subdirs) == 1:
+                            inner_dir = os.path.join(extract_dir, subdirs[0])
+                            if os.path.isdir(os.path.join(inner_dir, "messages")):
+                                extract_dir = inner_dir
+
+                    messages_path = os.path.join(extract_dir, "messages")
+                    if os.path.isdir(messages_path):
+                        add_discord_source(name, extract_dir)
+                        st.success(f"Added '{name}'!")
+                        st.rerun()
+                    else:
+                        st.error("Zip doesn't contain a valid Discord export (no 'messages' folder found).")
+
+        st.markdown("---")
+        st.caption("Or enter a folder path:")
+        name_path = st.text_input("Name", value="My Discord", key="discord_name_input")
+        path = st.text_input(
+            "Path",
+            value="~/Downloads/package",
+            key="discord_path_input",
+            help="Drag the folder into Terminal to get its path"
+        )
+
+        if st.button("Add Path", key="add_discord_btn"):
+            if not name_path:
+                st.error("Please enter a name.")
+            elif not path:
+                st.error("Please enter a path.")
+            else:
+                expanded = os.path.expanduser(path)
+                messages_path = os.path.join(expanded, "messages")
+                is_valid = os.path.isdir(messages_path) or (
+                    os.path.isdir(expanded) and
+                    os.path.exists(os.path.join(expanded, "index.json"))
+                )
+
+                if is_valid:
+                    add_discord_source(name_path, path)
+                    st.success(f"Added '{name_path}'!")
+                    st.rerun()
+                elif os.path.isdir(expanded):
+                    st.error("Folder exists but doesn't look like a Discord export. Expected a 'messages' subdirectory.")
+                else:
+                    st.error(f"Folder not found: {expanded}")
+
+
+def render_manage_sources(sources):
+    """Render the source management UI."""
+    with st.expander("Manage Data Sources"):
+        for i, source in enumerate(sources):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                status = "found" if source.exists() else "not found"
+                st.text(f"{source.name}: {source.path} ({status})")
+            with col2:
+                if st.button("Remove", key=f"remove_discord_{i}_{source.name}"):
+                    remove_discord_source(source.name)
+                    st.rerun()
+
+
 if __name__ == "__main__":
+    st.title("Discord Analysis Tool")
 
-    options = ["vacuum", "sudolabel", "s2e3440z"]
-    selection = st.segmented_control("Database", options, selection_mode="single", default=options[0])
-    if selection == "vacuum":
-        database = "package_vivi"
-    elif selection == "sudolabel":
-        database = "package_sudolabel"
-    elif selection == "s2e3440z":
-        database = "package_s2e3440z"
-    else:
-        database = "package_vivi"
+    sources = get_discord_sources()
 
-    # Load raw data (cached)
-    raw_message_data, channel_data, emoji_count = read_data(database)
+    if not sources:
+        st.info("No data sources configured. Add one below to get started.")
+        render_add_source_form()
+        st.stop()
 
-    # Preprocess timestamps once (cached separately from filters)
+    valid_sources = [s for s in sources if s.exists()]
+
+    if not valid_sources:
+        st.warning("No valid data sources found. Please check your paths or add a new source.")
+        render_add_source_form()
+        render_manage_sources(sources)
+        st.stop()
+
+    source_names = [s.name for s in valid_sources]
+    selection = st.segmented_control("Database", source_names, selection_mode="single")
+
+    render_add_source_form()
+    render_manage_sources(sources)
+
+    if selection is None:
+        st.info("Please select a database to analyze.")
+        st.stop()
+
+    selected_source = next((s for s in valid_sources if s.name == selection), None)
+    if not selected_source:
+        st.error("Selected source not found.")
+        st.stop()
+
+    data_path = selected_source.get_expanded_path()
+
+    raw_message_data, channel_data, emoji_count = read_data(data_path)
+
     df = preprocess_messages(raw_message_data)
     total_count = len(df)
 
     sorted_channel_data = sort_by_message_count(channel_data)
     top_ten = list(sorted_channel_data.head(10)['Channel'])
 
-    # Channel filter
     channel_options = ["All"] + top_ten
     channel_filter = st.selectbox("Top Contacts", channel_options, index=0)
 
-    # Channel type filter
     type_options = ['All', 'DM', 'GROUP_DM', 'GUILD_TEXT']
     type_filter = st.selectbox("Channel Type", type_options, index=0)
 
-    # Apply filters (fast operations on preprocessed data)
     filtered_df = df
 
     if channel_filter != "All":
@@ -374,7 +499,6 @@ if __name__ == "__main__":
     if type_filter != "All":
         filtered_df = filtered_df[filtered_df['Channel Type'] == type_filter]
 
-    # Search bar is inside text_frequency_graph
     text_frequency_graph(filtered_df, total_count)
     top_users_graph(sorted_channel_data)
     top_emoji_graph(emoji_count)
