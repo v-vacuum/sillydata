@@ -16,7 +16,6 @@ st.markdown(
     **what's here:**
     - **imessage** - when you text, who you text, what words you overuse, top emojis
     - **discord** - same thing but for discord dms and servers
-    - **facetime** - tbd
 
     ---
 
