@@ -122,63 +122,48 @@ def zipf_word_analysis(df: pd.DataFrame) -> None:
 
 
 @st.cache_data
-def text_frequency_processing(df):
+def preprocess_messages(df):
+    """Cache-heavy preprocessing: timestamp parsing, timezone conversion, sec/date extraction."""
+    df = df.copy()
     df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
     df = df.dropna(subset=['Timestamp'])
 
-    #change timezones!!(make sure is "timezone aware" or whatever)
     df['Timestamp'] = df['Timestamp'].dt.tz_localize('UTC')
-    #now do your timezone!
     df['Timestamp'] = df['Timestamp'].dt.tz_convert('America/New_York')
 
-    # seconds since midnight for x
     df['sec'] = (
         df['Timestamp'].dt.hour * 3600 +
         df['Timestamp'].dt.minute * 60 +
         df['Timestamp'].dt.second
     )
-
-    # calendar date for y
     df['date'] = df['Timestamp'].dt.date
-    df['time_str'] = df['Timestamp'].dt.strftime('%H:%M')  # for hover
+    df['time_str'] = df['Timestamp'].dt.strftime('%H:%M')
+    return df
 
-
-    # monthly ticks on y
+def get_month_ticks(df):
+    """Generate monthly tick positions and labels for y-axis."""
     months = pd.date_range(
         df['Timestamp'].min().normalize(),
         df['Timestamp'].max().normalize(),
         freq='MS'
     )
-
     yticks = months.date
-
-    # for the axis, show only the 3‑letter month for non‑Jan, and blank for Jan
     ytext = [
         "" if m.month == 1 else m.strftime('%b')
         for m in months
     ]
+    return yticks, ytext, months
 
-    return df, yticks, ytext, months
+def text_frequency_graph(df, total_count: int) -> None:
+    search_query = st.text_input("Search messages", placeholder="Filter by message content...")
 
-def text_frequency_graph(df, top_five: list[str]) -> None:
-    # Display the chart in Streamlit
-    # if a top 5 user is chosen, filter
+    if search_query:
+        df = df[df['Contents'].str.contains(search_query, case=False, na=False)]
 
-    options = ["All"] + top_five
-    contact_filter = st.selectbox("Top Contacts", options, index=0)
+    yticks, ytext, months = get_month_ticks(df)
 
-    if contact_filter != "All":
-        df = df[df['Channel'] == contact_filter]
-
-    #channel type filter
-    options = ['All', 'DM', 'GROUP_DM', 'GUILD_TEXT']
-    contact_filter = st.selectbox("Channel Type", options, index=0)
-
-    if contact_filter != "All":
-        df = df[df['Channel Type'] == contact_filter]
-
-
-    df, yticks, ytext, months = text_frequency_processing(df)
+    if len(df) != total_count:
+        st.caption(f"Showing {len(df)} of {total_count} messages")
 
 
     fig = go.Figure(go.Scattergl(
@@ -351,7 +336,6 @@ def read_data(database):
 
 if __name__ == "__main__":
 
-    #set up easy swtich between vivi and sudo
     options = ["vacuum", "sudolabel", "s2e3440z"]
     selection = st.segmented_control("Database", options, selection_mode="single", default=options[0])
     if selection == "vacuum":
@@ -363,15 +347,35 @@ if __name__ == "__main__":
     else:
         database = "package_vivi"
 
-    #read file, hardcoded as mine
-    message_data, channel_data, emoji_count = read_data(database)
-    #sort chanell data top users texted to least
+    # Load raw data (cached)
+    raw_message_data, channel_data, emoji_count = read_data(database)
+
+    # Preprocess timestamps once (cached separately from filters)
+    df = preprocess_messages(raw_message_data)
+    total_count = len(df)
+
     sorted_channel_data = sort_by_message_count(channel_data)
+    top_ten = list(sorted_channel_data.head(10)['Channel'])
 
-    #get top 5 users to pass to text frequency to sort
-    top_five = list(sorted_channel_data.head(10)['Channel'])
+    # Channel filter
+    channel_options = ["All"] + top_ten
+    channel_filter = st.selectbox("Top Contacts", channel_options, index=0)
 
-    text_frequency_graph(message_data, top_five)
+    # Channel type filter
+    type_options = ['All', 'DM', 'GROUP_DM', 'GUILD_TEXT']
+    type_filter = st.selectbox("Channel Type", type_options, index=0)
+
+    # Apply filters (fast operations on preprocessed data)
+    filtered_df = df
+
+    if channel_filter != "All":
+        filtered_df = filtered_df[filtered_df['Channel'] == channel_filter]
+
+    if type_filter != "All":
+        filtered_df = filtered_df[filtered_df['Channel Type'] == type_filter]
+
+    # Search bar is inside text_frequency_graph
+    text_frequency_graph(filtered_df, total_count)
     top_users_graph(sorted_channel_data)
     top_emoji_graph(emoji_count)
-    zipf_word_analysis(message_data)
+    zipf_word_analysis(raw_message_data)

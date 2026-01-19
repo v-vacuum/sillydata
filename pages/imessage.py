@@ -214,42 +214,46 @@ def load_and_process_messages(db_path):
     return df, emoji_count
 
 @st.cache_data
-def text_frequency_processing(df, single_contact):
+def preprocess_messages(df):
+    """Cache-heavy preprocessing: timestamp parsing, sec/date extraction."""
+    df = df.copy()
     df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
     df = df.dropna(subset=['timestamp'])
 
-    # if selects to filter by a top 5 contact
-    if single_contact != "All":
-        df = df[df['contact_id'] == single_contact]
-
-    # seconds since midnight for x
     df['sec'] = (
         df['timestamp'].dt.hour * 3600 +
         df['timestamp'].dt.minute * 60 +
         df['timestamp'].dt.second
     )
-    # calendar date for y
     df['date'] = df['timestamp'].dt.date
-    df['time_str'] = df['timestamp'].dt.strftime('%H:%M')  # for hover
+    df['time_str'] = df['timestamp'].dt.strftime('%H:%M')
     df = df.sort_values('date')
+    return df
 
-    # monthly ticks on y
+def get_month_ticks(df):
+    """Generate monthly tick positions and labels for y-axis."""
     months = pd.date_range(
         df['timestamp'].min().normalize(),
         df['timestamp'].max().normalize(),
         freq='MS'
     )
     yticks = months.date
-
-    # for the axis, show only the 3‑letter month for non‑Jan, and blank for Jan
     ytext = [
         "" if m.month == 1 else m.strftime('%b')
         for m in months
     ]
-    return df, yticks, ytext, months
+    return yticks, ytext, months
 
-def text_frequency(df, single_contact):
-    df, yticks, ytext, months = text_frequency_processing(df, single_contact)
+def text_frequency(df, total_count: int):
+    search_query = st.text_input("Search messages", placeholder="Filter by message content...")
+
+    if search_query:
+        df = df[df['message'].str.contains(search_query, case=False, na=False)]
+
+    if len(df) != total_count:
+        st.caption(f"Showing {len(df)} of {total_count} messages")
+
+    yticks, ytext, months = get_month_ticks(df)
 
     fig = go.Figure(go.Scattergl(
         x    = df['sec'],
@@ -343,13 +347,16 @@ if __name__ == "__main__":
         st.error(f"Database file '{selection}' not found!")
         st.stop()
 
-    # Load and process messages
+    # Load and process messages (cached)
     with st.spinner("Loading and decoding messages..."):
-        df, emoji_count = load_and_process_messages(selection)
+        raw_df, emoji_count = load_and_process_messages(selection)
 
-    if df is None or df.empty:
+    if raw_df is None or raw_df.empty:
         st.error("Failed to process messages or no messages found.")
         st.stop()
+
+    # Preprocess timestamps once (cached separately from filters)
+    df = preprocess_messages(raw_df)
 
     st.success(f"Loaded {len(df)} messages!")
 
@@ -380,7 +387,9 @@ if __name__ == "__main__":
         freq_df = df[df['is_from_me'] == 1]
     else:
         freq_df = df
-    text_frequency(freq_df, freq_contact)
+    if freq_contact != "All":
+        freq_df = freq_df[freq_df['contact_id'] == freq_contact]
+    text_frequency(freq_df, len(df))
 
     st.subheader("Word Analysis")
     col1, col2 = st.columns(2)
