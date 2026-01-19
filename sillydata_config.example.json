@@ -1,0 +1,14 @@
+{
+  "imessage": [
+    {
+      "name": "My iMessages",
+      "path": "~/Library/Messages/chat.db"
+    }
+  ],
+  "discord": [
+    {
+      "name": "My Discord",
+      "path": "~/Downloads/package"
+    }
+  ]
+}

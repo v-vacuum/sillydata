@@ -26,6 +26,22 @@ uv sync
 streamlit run welcome.py
 ```
 
+### adding your data
+
+**imessage (macos):**
+1. go to the imessage page in the sidebar
+2. click "Add New Data Source"
+3. either use the default path button or enter `~/Library/Messages/chat.db`
+4. you may need to grant terminal/your IDE full disk access in System Preferences > Privacy & Security
+
+**discord:**
+1. request your data from discord: Settings > Privacy & Safety > Request All of My Data
+2. wait for the email (can take up to 30 days)
+3. extract the zip file
+4. go to the discord page and add the extracted folder path
+
+your data sources are stored in `sillydata_config.json` (gitignored). see `sillydata_config.example.json` for the format.
+
 ## tech stack
 
 - python 3.13

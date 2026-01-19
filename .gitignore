@@ -13,9 +13,8 @@ wheels/
 .streamlit/
 .cache/
 
-#test database
-vivi_chat.db
-sudo_chat.db
-package_vivi
-package_sudolabel
-package_s2e3440z
+# User data (not committed)
+sillydata_config.json
+*.db
+package_*
+data/

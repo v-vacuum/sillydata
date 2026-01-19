@@ -9,6 +9,16 @@ import re
 import altair as alt
 from collections import Counter
 from wordfreq import zipf_frequency, word_frequency
+from config import (
+    get_imessage_sources,
+    add_imessage_source,
+    remove_imessage_source,
+    get_default_imessage_path,
+    check_default_imessage_exists,
+)
+
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+IMESSAGE_UPLOAD_DIR = os.path.join(DATA_DIR, "imessage")
 
 EMOJI_PATTERN = re.compile(u"(["
     u"\U0001F600-\U0001F64F"  # emoticons
@@ -332,30 +342,145 @@ def top_emoji_graph(emoji_count: dict):
         titleFontSize=10
     ))
 
+def render_add_source_form():
+    """Render the form for adding a new iMessage data source."""
+    with st.expander("Add New Data Source", expanded=False):
+        if check_default_imessage_exists():
+            st.caption("Default iMessage database found on this Mac.")
+            if st.button("Use Default iMessage Path"):
+                add_imessage_source("My iMessages", get_default_imessage_path())
+                st.rerun()
+            st.markdown("---")
+
+        st.caption("Or upload your chat.db file:")
+        uploaded_file = st.file_uploader(
+            "Choose chat.db file",
+            type=["db"],
+            key="imessage_uploader",
+            help="On macOS: ~/Library/Messages/chat.db"
+        )
+
+        if uploaded_file is not None:
+            name = st.text_input("Name for this source", value="My iMessages", key="imessage_upload_name")
+            if st.button("Add Uploaded File", key="add_uploaded_imessage"):
+                if not name:
+                    st.error("Please enter a name.")
+                else:
+                    os.makedirs(IMESSAGE_UPLOAD_DIR, exist_ok=True)
+                    save_path = os.path.join(IMESSAGE_UPLOAD_DIR, f"{name.replace(' ', '_')}.db")
+                    with open(save_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    add_imessage_source(name, save_path)
+                    st.success(f"Added '{name}'!")
+                    st.rerun()
+
+        st.markdown("---")
+        st.caption("Or enter a path directly:")
+        path = st.text_input(
+            "Path",
+            value="~/Library/Messages/chat.db",
+            key="imessage_path_input",
+            help="Drag the file into Terminal to get its path"
+        )
+        name_path = st.text_input("Name", value="My iMessages", key="imessage_name_input")
+
+        if st.button("Add Path", key="add_imessage_path_btn"):
+            if not name_path:
+                st.error("Please enter a name.")
+            elif not path:
+                st.error("Please enter a path.")
+            else:
+                expanded = os.path.expanduser(path)
+                if os.path.isfile(expanded):
+                    add_imessage_source(name_path, path)
+                    st.success(f"Added '{name_path}'!")
+                    st.rerun()
+                else:
+                    st.error(f"File not found: {expanded}")
+
+
+def render_manage_sources(sources):
+    """Render the source management UI."""
+    with st.expander("Manage Data Sources"):
+        for i, source in enumerate(sources):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                status = "found" if source.exists() else "not found"
+                st.text(f"{source.name}: {source.path} ({status})")
+            with col2:
+                if st.button("Remove", key=f"remove_imessage_{i}_{source.name}"):
+                    remove_imessage_source(source.name)
+                    st.rerun()
+
+
 if __name__ == "__main__":
     st.title("iMessage Analysis Tool")
 
-    # Database selection
-    options = ["vivi_chat.db", "sudo_chat.db"]
-    selection = st.segmented_control("Database", options, selection_mode="single")
+    sources = get_imessage_sources()
+
+    if not sources:
+        st.info("No data sources configured. Add one below to get started.")
+        render_add_source_form()
+        st.stop()
+
+    valid_sources = [s for s in sources if s.exists()]
+
+    if not valid_sources:
+        st.warning("No valid data sources found. Please check your paths or add a new source.")
+        render_add_source_form()
+        render_manage_sources(sources)
+        st.stop()
+
+    source_names = [s.name for s in valid_sources]
+    selection = st.segmented_control("Database", source_names, selection_mode="single")
+
+    render_add_source_form()
+    render_manage_sources(sources)
 
     if selection is None:
         st.info("Please select a database to analyze.")
         st.stop()
 
-    if not os.path.exists(selection):
-        st.error(f"Database file '{selection}' not found!")
+    selected_source = next((s for s in valid_sources if s.name == selection), None)
+    if not selected_source:
+        st.error("Selected source not found.")
         st.stop()
 
-    # Load and process messages (cached)
-    with st.spinner("Loading and decoding messages..."):
-        raw_df, emoji_count = load_and_process_messages(selection)
+    db_path = selected_source.get_expanded_path()
+
+    if not os.path.isfile(db_path):
+        st.error(f"Database file not found: {db_path}")
+        st.info("If you uploaded this file previously, you may need to re-upload it.")
+        st.stop()
+
+    try:
+        with st.spinner("Loading and decoding messages..."):
+            raw_df, emoji_count = load_and_process_messages(db_path)
+    except Exception as e:
+        error_msg = str(e)
+        if "unable to open database file" in error_msg:
+            st.error("Unable to open database file.")
+            st.markdown("""
+            **This is likely a macOS permissions issue.** To fix it:
+
+            1. Open **System Preferences** > **Privacy & Security** > **Full Disk Access**
+            2. Add your terminal app (Terminal, iTerm, etc.) or IDE (VS Code, PyCharm, etc.)
+            3. Restart the terminal/IDE and try again
+
+            Alternatively, you can **copy the file** to another location:
+            ```bash
+            cp ~/Library/Messages/chat.db ~/Desktop/chat.db
+            ```
+            Then add `~/Desktop/chat.db` as your data source.
+            """)
+        else:
+            st.error(f"Error loading database: {error_msg}")
+        st.stop()
 
     if raw_df is None or raw_df.empty:
         st.error("Failed to process messages or no messages found.")
         st.stop()
 
-    # Preprocess timestamps once (cached separately from filters)
     df = preprocess_messages(raw_df)
 
     st.success(f"Loaded {len(df)} messages!")
