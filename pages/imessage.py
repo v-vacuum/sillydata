@@ -6,8 +6,16 @@ from io import BytesIO
 import typedstream
 import os
 import re
+import altair as alt
 from collections import Counter
 from wordfreq import zipf_frequency, word_frequency
+
+EMOJI_PATTERN = re.compile(u"(["
+    u"\U0001F600-\U0001F64F"  # emoticons
+    u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+    u"\U0001F680-\U0001F6FF"  # transport & map symbols
+    u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
+"])", flags=re.UNICODE)
 
 URL_PATTERN = re.compile(r'https?://\S+')
 WORD_PATTERN = re.compile(r"[a-zA-Z']+")
@@ -144,6 +152,7 @@ def decode_attributed_body(body):
 def load_and_process_messages(db_path):
     """Load messages from SQLite database and decode text"""
     conn = sqlite3.connect(db_path)
+    emoji_count = {}
 
     query = """
     SELECT
@@ -182,6 +191,15 @@ def load_and_process_messages(db_path):
 
         decoded_messages.append(message_text or '')
 
+        # count emojis in this message
+        if message_text:
+            emojis = EMOJI_PATTERN.findall(message_text)
+            for emoji in emojis:
+                if emoji in emoji_count:
+                    emoji_count[emoji] += 1
+                else:
+                    emoji_count[emoji] = 1
+
         # update progress every 100 rows
         if i % 100 == 0 or i == total - 1:
             progress_bar.progress((i + 1) / total)
@@ -193,7 +211,7 @@ def load_and_process_messages(db_path):
     info_placeholder.empty()
     progress_placeholder.empty()
 
-    return df
+    return df, emoji_count
 
 @st.cache_data
 def text_frequency_processing(df, single_contact):
@@ -285,6 +303,31 @@ def text_frequency(df, single_contact):
 
     st.plotly_chart(fig, use_container_width=True)
 
+@st.fragment
+def top_emoji_graph(emoji_count: dict):
+    st.text("Top Emojis Used")
+
+    if not emoji_count:
+        st.info("No emojis found in messages.")
+        return
+
+    filter = st.number_input(
+        "Emojis Displayed", value=10, placeholder="Type a number..."
+    )
+
+    emoji_df = pd.DataFrame.from_dict(emoji_count, orient='index')
+    emoji_df.columns = ['Count']
+    emoji_df.index.name = 'Emoji'
+    emoji_df.reset_index(inplace=True)
+    emoji_df = emoji_df.sort_values('Count', ascending=False)
+    st.write(alt.Chart(emoji_df.head(filter)).mark_bar().encode(
+        x=alt.X('Emoji', sort='-y', axis=alt.Axis(labelAngle=0)),
+        y='Count',
+    ).configure_axis(
+        labelFontSize=20,
+        titleFontSize=10
+    ))
+
 if __name__ == "__main__":
     st.title("iMessage Analysis Tool")
 
@@ -302,7 +345,7 @@ if __name__ == "__main__":
 
     # Load and process messages
     with st.spinner("Loading and decoding messages..."):
-        df = load_and_process_messages(selection)
+        df, emoji_count = load_and_process_messages(selection)
 
     if df is None or df.empty:
         st.error("Failed to process messages or no messages found.")
@@ -354,3 +397,6 @@ if __name__ == "__main__":
     if zipf_contact != "All":
         zipf_df = zipf_df[zipf_df['contact_id'] == zipf_contact]
     zipf_word_analysis(zipf_df)
+
+    st.subheader("Emoji Analysis")
+    top_emoji_graph(emoji_count)
