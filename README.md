@@ -2,6 +2,9 @@
 
 a streamlit dashboard for visualizing personal messaging data from discord and imessage.
 
+<img width="794" height="658" alt="messare time vs  date" src="https://github.com/user-attachments/assets/0467d7e9-5db2-46e1-95af-40f8b95fc499" />
+<img width="822" height="874" alt="image" src="https://github.com/user-attachments/assets/526be4b5-027b-44cc-8b0a-fe2cc412df55" />
+
 ## features
 
 - **message frequency scatter plots** - interactive plots showing message timing (time of day vs date) across years of data
